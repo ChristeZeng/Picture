@@ -1,0 +1,171 @@
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.sensors.base import BaseSensorOperator
+from airflow.utils.dates import days_ago
+import boto3
+import json
+import jenkins
+import requests
+import time
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': days_ago(1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+}
+
+dag = DAG(
+    'gerrit_job_trigger',
+    default_args=default_args,
+    description='A DAG to trigger Jenkins jobs from Gerrit events and aggregate results',
+    schedule_interval=None,
+)
+
+class KinesisSensor(BaseSensorOperator):
+    def __init__(self, stream_name, region_name, *args, **kwargs):
+        super(KinesisSensor, self).__init__(*args, **kwargs)
+        self.stream_name = stream_name
+        self.region_name = region_name
+
+    def poke(self, context):
+        kinesis_client = boto3.client('kinesis', region_name=self.region_name)
+        response = kinesis_client.get_records(
+            ShardIterator='SHARD_ITERATOR_TYPE'
+        )
+        if response['Records']:
+            for record in response['Records']:
+                event_data = json.loads(record['Data'])
+                context['task_instance'].xcom_push(key='gerrit_event', value=event_data)
+            return True
+        return False
+
+def read_config():
+    with open('/path/to/job_config.json') as f:
+        return json.load(f)
+
+def parse_event(**kwargs):
+    event_data = kwargs['ti'].xcom_pull(key='gerrit_event')
+    change_id = event_data['change']['id']
+    project = event_data['change']['project']
+    branch = event_data['change']['branch']
+    
+    # Connect to DynamoDB
+    dynamodb = boto3.resource('dynamodb', region_name='your-region')
+    table = dynamodb.Table('processed_events')
+    
+    # Check if the event has already been processed
+    response = table.get_item(Key={'change_id': change_id})
+    if 'Item' in response:
+        # Event has already been processed, skip further processing
+        return
+    
+    # Mark the event as processed
+    table.put_item(Item={'change_id': change_id})
+    
+    # Read job configuration
+    config = read_config()
+    
+    # Determine jobs to trigger based on project and branch
+    jobs_to_trigger = []
+    if project in config['projects']:
+        project_config = config['projects'][project]
+        if branch in project_config['branches']:
+            jobs_to_trigger = project_config['branches'][branch]
+    
+    parsed_data = {
+        'change_id': change_id,
+        'branch': branch,
+        'event_type': event_data['type'],
+        'author': event_data['change']['owner']['username'],
+        'jobs': jobs_to_trigger
+    }
+    kwargs['ti'].xcom_push(key='parsed_event', value=parsed_data)
+
+def trigger_jenkins_jobs(**kwargs):
+    parsed_event = kwargs['ti'].xcom_pull(key='parsed_event')
+    job_results = {}
+    jenkins_url = 'http://your-jenkins-url'
+    server = jenkins.Jenkins(jenkins_url, username='your-username', password='your-password')
+    
+    for job in parsed_event['jobs']:
+        job_name = job['job_name']
+        parameters = job['parameters']
+        queue_item = server.build_job(job_name, parameters)
+        job_results[job_name] = {'queue_item': queue_item, 'status': 'PENDING'}
+    
+    kwargs['ti'].xcom_push(key='job_results', value=job_results)
+
+def monitor_jenkins_jobs(**kwargs):
+    job_results = kwargs['ti'].xcom_pull(key='job_results')
+    jenkins_url = 'http://your-jenkins-url'
+    server = jenkins.Jenkins(jenkins_url, username='your-username', password='your-password')
+    
+    for job_name, result in job_results.items():
+        build_info = server.get_build_info(result['queue_item'])
+        while build_info['building']:
+            time.sleep(30)  # Wait for 30 seconds before polling again
+            build_info = server.get_build_info(result['queue_item'])
+        job_results[job_name]['status'] = build_info['result']
+    
+    kwargs['ti'].xcom_push(key='aggregated_results', value=job_results)
+
+def send_vote_to_gerrit(**kwargs):
+    parsed_event = kwargs['ti'].xcom_pull(key='parsed_event')
+    aggregated_results = kwargs['ti'].xcom_pull(key='aggregated_results')
+    
+    all_success = all(result['status'] == 'SUCCESS' for result in aggregated_results.values())
+    gerrit_url = f"http://your-gerrit-url/a/changes/{parsed_event['change_id']}/revisions/current/review"
+    
+    vote = '+1' if all_success else '-1'
+    comments = [f"{job_name}: {result['status']}" for job_name, result in aggregated_results.items()]
+    comment_text = "\n".join(comments)
+    
+    data = {
+        'labels': {
+            'Code-Review': vote
+        },
+        'message': comment_text
+    }
+    
+    response = requests.post(gerrit_url, json=data, auth=('your-username', 'your-password'))
+    response.raise_for_status()
+
+kinesis_sensor_task = KinesisSensor(
+    task_id='kinesis_sensor',
+    stream_name='your-kinesis-stream',
+    region_name='your-region',
+    dag=dag,
+)
+
+parse_event_task = PythonOperator(
+    task_id='parse_event',
+    python_callable=parse_event,
+    provide_context=True,
+    dag=dag,
+)
+
+trigger_jobs_task = PythonOperator(
+    task_id='trigger_jenkins_jobs',
+    python_callable=trigger_jenkins_jobs,
+    provide_context=True,
+    dag=dag,
+)
+
+monitor_jobs_task = PythonOperator(
+    task_id='monitor_jenkins_jobs',
+    python_callable=monitor_jenkins_jobs,
+    provide_context=True,
+    dag=dag,
+)
+
+send_vote_task = PythonOperator(
+    task_id='send_vote_to_gerrit',
+    python_callable=send_vote_to_gerrit,
+    provide_context=True,
+    dag=dag,
+)
+
+kinesis_sensor_task >> parse_event_task >> trigger_jobs_task >> monitor_jobs_task >> send_vote_task
