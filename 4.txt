@@ -1,0 +1,29 @@
+@startuml
+[*] --> WaitingForEvent : Initial State
+
+state "Event Lifecycle" as EV {
+  WaitingForEvent -> EventReceived : Kinesis event received
+  EventReceived -> ParsingEvent : Parsing event data
+  ParsingEvent -> EventProcessed : Event parsed and jobs determined
+  EventProcessed --> [*] : End
+}
+
+state "Job Lifecycle" as JB {
+  [*] --> JobsPending : Initial State
+  JobsPending -> JobsTriggered : Trigger Jenkins jobs
+  JobsTriggered -> MonitoringJobs : Monitor Jenkins jobs status
+  MonitoringJobs -> JobsCompleted : All jobs completed
+  JobsCompleted --> [*] : End
+}
+
+WaitingForEvent -> EventReceived
+EventReceived -> ParsingEvent
+ParsingEvent -> EventProcessed
+EventProcessed -> JobsPending : Determine jobs to trigger
+JobsPending -> JobsTriggered
+JobsTriggered -> MonitoringJobs
+MonitoringJobs -> JobsCompleted
+JobsCompleted -> VotingOnGerrit : Send aggregated results to Gerrit
+VotingOnGerrit --> [*] : End
+
+@enduml
