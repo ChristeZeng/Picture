@@ -1,0 +1,272 @@
+Detailed Unit Testing Plan for the Airflow + Kinesis Gerrit Trigger System
+The following plan outlines the unit tests for various components of the Airflow + Kinesis Gerrit Trigger System, including event parsing, Jenkins job triggering, monitoring, and voting back to Gerrit.
+
+a. Configuration File Reading
+Objective: Verify that the configuration file is correctly read and parsed.
+
+Tests:
+
+Test reading a valid configuration file.
+Test handling of missing or malformed configuration files.
+Example Unit Test in Python (using pytest):
+
+python
+Copy code
+import json
+import os
+import pytest
+from my_dag import read_config
+
+def test_read_config(monkeypatch):
+    config_content = '''
+    {
+      "projects": {
+        "project1": {
+          "branches": {
+            "main": [
+              {"job_name": "job1", "parameters": {"param1": "value1"}},
+              {"job_name": "job2", "parameters": {"param1": "value2"}}
+            ]
+          }
+        }
+      }
+    }
+    '''
+    monkeypatch.setattr('builtins.open', lambda x, y: config_content)
+    config = read_config()
+    assert config['projects']['project1']['branches']['main'][0]['job_name'] == 'job1'
+
+def test_read_missing_config(monkeypatch):
+    monkeypatch.setattr('builtins.open', lambda x, y: FileNotFoundError())
+    with pytest.raises(FileNotFoundError):
+        read_config()
+b. Parsing Event Data
+Objective: Verify that the event parsing logic correctly extracts required information and determines the correct jobs to trigger based on the configuration file.
+
+Tests:
+
+Test parsing valid Gerrit event data.
+Test handling invalid or malformed event data.
+Test determining jobs based on different projects and branches in the configuration file.
+Example Unit Test in Python (using pytest and unittest.mock):
+
+python
+Copy code
+import pytest
+from unittest.mock import MagicMock, patch
+from my_dag import parse_event, read_config
+
+@pytest.fixture
+def example_event():
+    return {
+        'change': {
+            'id': '12345',
+            'project': 'project1',
+            'branch': 'main',
+            'owner': {'username': 'user1'}
+        },
+        'type': 'patchset-created'
+    }
+
+@patch('my_dag.read_config')
+def test_parse_event(mock_read_config, example_event):
+    mock_read_config.return_value = {
+        'projects': {
+            'project1': {
+                'branches': {
+                    'main': [
+                        {'job_name': 'job1', 'parameters': {'param1': 'value1'}},
+                        {'job_name': 'job2', 'parameters': {'param1': 'value2'}}
+                    ]
+                }
+            }
+        }
+    }
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.return_value = example_event
+    
+    parse_event(**context)
+    
+    parsed_event = context['ti'].xcom_push.call_args[0][1]
+    assert parsed_event['change_id'] == '12345'
+    assert parsed_event['jobs'][0]['job_name'] == 'job1'
+    assert parsed_event['jobs'][1]['job_name'] == 'job2'
+
+def test_parse_event_invalid_data():
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.return_value = {'invalid': 'data'}
+    
+    with pytest.raises(KeyError):
+        parse_event(**context)
+c. Triggering Jenkins Jobs
+Objective: Verify that Jenkins jobs are correctly triggered with appropriate parameters.
+
+Tests:
+
+Test triggering multiple Jenkins jobs with valid parameters.
+Test handling errors when triggering Jenkins jobs.
+Example Unit Test in Python (using pytest and unittest.mock):
+
+python
+Copy code
+from unittest.mock import patch, MagicMock
+import jenkins
+import pytest
+from my_dag import trigger_jenkins_jobs
+
+@patch('jenkins.Jenkins')
+def test_trigger_jenkins_jobs(mock_jenkins):
+    mock_server = MagicMock()
+    mock_jenkins.return_value = mock_server
+    
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.return_value = {
+        'jobs': [
+            {'job_name': 'job1', 'parameters': {'param1': 'value1'}},
+            {'job_name': 'job2', 'parameters': {'param1': 'value2'}}
+        ],
+        'change_id': '12345'
+    }
+    
+    trigger_jenkins_jobs(**context)
+    
+    mock_server.build_job.assert_any_call('job1', {'param1': 'value1'})
+    mock_server.build_job.assert_any_call('job2', {'param1': 'value2'})
+
+@patch('jenkins.Jenkins')
+def test_trigger_jenkins_jobs_error(mock_jenkins):
+    mock_server = MagicMock()
+    mock_server.build_job.side_effect = jenkins.JenkinsException("Error")
+    mock_jenkins.return_value = mock_server
+    
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.return_value = {
+        'jobs': [
+            {'job_name': 'job1', 'parameters': {'param1': 'value1'}}
+        ],
+        'change_id': '12345'
+    }
+    
+    with pytest.raises(jenkins.JenkinsException):
+        trigger_jenkins_jobs(**context)
+d. Monitoring Jenkins Jobs
+Objective: Verify that the job monitoring logic correctly retrieves the job statuses and handles polling correctly.
+
+Tests:
+
+Test monitoring multiple Jenkins jobs until completion.
+Test handling job failures and retries.
+Example Unit Test in Python (using pytest and unittest.mock):
+
+python
+Copy code
+import time
+from unittest.mock import patch, MagicMock
+import pytest
+from my_dag import monitor_jenkins_jobs
+
+@patch('jenkins.Jenkins')
+def test_monitor_jenkins_jobs(mock_jenkins):
+    mock_server = MagicMock()
+    mock_jenkins.return_value = mock_server
+    mock_server.get_build_info.side_effect = [
+        {'building': True},
+        {'building': False, 'result': 'SUCCESS'}
+    ]
+    
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.return_value = {
+        'job1': {'queue_item': 1, 'status': 'PENDING'}
+    }
+    
+    monitor_jenkins_jobs(**context)
+    
+    mock_server.get_build_info.assert_called_with(1)
+    aggregated_results = context['ti'].xcom_push.call_args[0][1]
+    assert aggregated_results['job1']['status'] == 'SUCCESS'
+
+@patch('jenkins.Jenkins')
+def test_monitor_jenkins_jobs_failure(mock_jenkins):
+    mock_server = MagicMock()
+    mock_jenkins.return_value = mock_server
+    mock_server.get_build_info.side_effect = [
+        {'building': True},
+        {'building': False, 'result': 'FAILURE'}
+    ]
+    
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.return_value = {
+        'job1': {'queue_item': 1, 'status': 'PENDING'}
+    }
+    
+    monitor_jenkins_jobs(**context)
+    
+    mock_server.get_build_info.assert_called_with(1)
+    aggregated_results = context['ti'].xcom_push.call_args[0][1]
+    assert aggregated_results['job1']['status'] == 'FAILURE'
+e. Sending Votes to Gerrit
+Objective: Verify that the logic for sending votes back to Gerrit correctly aggregates job results and sends the appropriate vote.
+
+Tests:
+
+Test sending a successful vote when all jobs succeed.
+Test sending a failure vote when any job fails.
+Test handling errors when communicating with the Gerrit API.
+Example Unit Test in Python (using pytest and unittest.mock):
+
+python
+Copy code
+import requests
+from unittest.mock import patch, MagicMock
+import pytest
+from my_dag import send_vote_to_gerrit
+
+@patch('requests.post')
+def test_send_vote_to_gerrit(mock_post):
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.side_effect = [
+        {
+            'change_id': '12345',
+            'jobs': [
+                {'job_name': 'job1', 'parameters': {'param1': 'value1'}},
+                {'job_name': 'job2', 'parameters': {'param1': 'value2'}}
+            ]
+        },
+        {
+            'job1': {'status': 'SUCCESS'},
+            'job2': {'status': 'SUCCESS'}
+        }
+    ]
+    
+    send_vote_to_gerrit(**context)
+    
+    mock_post.assert_called_once()
+    vote_data = mock_post.call_args[1]['json']
+    assert vote_data['labels']['Code-Review'] == '+1'
+
+@patch('requests.post')
+def test_send_vote_to_gerrit_failure(mock_post):
+    context = {'ti': MagicMock()}
+    context['ti'].xcom_pull.side_effect = [
+        {
+            'change_id': '12345',
+            'jobs': [
+                {'job_name': 'job1', 'parameters': {'param1': 'value1'}},
+                {'job_name': 'job2', 'parameters': {'param1': 'value2'}}
+            ]
+        },
+        {
+            'job1': {'status': 'SUCCESS'},
+            'job2': {'status': 'FAILURE'}
+        }
+    ]
+    
+    send_vote_to_gerrit(**context)
+    
+    mock_post.assert_called_once()
+    vote_data = mock_post.call_args[1]['json']
+    assert vote_data['labels']['Code-Review'] == '-1'
+    assert 'job2: FAILURE' in vote_data['message']
+
+@patch('requests.post')
+def test_send_vote_to_gerrit_api
