@@ -1,0 +1,51 @@
+6. Operations
+
+a. Metrics and Alarms
+
+Key Metrics to Monitor:
+
+	•	Event Ingestion Rate: Number of Gerrit events ingested per minute.
+	•	Job Trigger Success Rate: Percentage of successfully triggered Jenkins jobs.
+	•	Job Completion Time: Time taken for each Jenkins job to complete.
+	•	System Latency: Time from event ingestion to sending the vote back to Gerrit.
+	•	Error Rates: Number of errors encountered in each stage (event parsing, job triggering, job monitoring, voting).
+
+Alarms:
+
+	•	High Error Rate: Trigger an alarm if the error rate exceeds a threshold.
+	•	Job Failure Rate: Trigger an alarm if the percentage of failed Jenkins jobs exceeds a threshold.
+	•	High System Latency: Trigger an alarm if the system latency exceeds a threshold.
+
+b. On-Call Engineer Engagement
+
+	•	Engage the on-call engineer when:
+	•	The error rate exceeds the threshold.
+	•	Jenkins jobs are failing consistently.
+	•	The system latency is consistently high, affecting the turnaround time for votes.
+	•	There are persistent network issues or connectivity problems with Gerrit or Jenkins.
+
+c. Metrics for Ops Review Meetings
+
+	•	Event Ingestion Rate Trends: Analyze trends over time to ensure the system can handle peak loads.
+	•	Job Success/Failure Rates: Review the success and failure rates of triggered Jenkins jobs.
+	•	System Latency Distribution: Analyze the distribution of latency to identify any performance bottlenecks.
+	•	Error Breakdown: Categorize and analyze errors to identify common failure points.
+
+d. Operator Interaction
+
+	•	Monitoring Dashboards: Use monitoring tools (e.g., Grafana, CloudWatch) to create dashboards for real-time monitoring.
+	•	Runbook Entries: Document common operational issues and their resolution steps in a runbook.
+	•	Automated Alerts: Set up automated alerts to notify operators of critical issues.
+
+e. CI/CD Automation
+
+	•	Automated Tests: Integrate unit, integration, and end-to-end tests into the CI/CD pipeline.
+	•	Performance Tests: Run performance tests as part of the deployment pipeline to ensure the system can handle expected loads.
+	•	Deployment Verification: Use canary deployments and automated verification to ensure new changes do not introduce regressions.
+
+f. Logging
+
+	•	Event Logging: Log all received Gerrit events with relevant metadata.
+	•	Job Status Logging: Log the status and result of each triggered Jenkins job.
+	•	Error Logging: Log detailed error messages and stack traces for any encountered errors.
+	•	Latency Logging: Log the time taken for each stage of the process (event ingestion, job triggering, job monitoring, voting).
