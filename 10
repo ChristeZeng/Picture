@@ -1,0 +1,29 @@
+{
+  "Comment": "A state machine to trigger Jenkins jobs from Gerrit events",
+  "StartAt": "Parse Event",
+  "States": {
+    "Parse Event": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:ParseEventLambda",
+      "ResultPath": "$.parsedEvent",
+      "Next": "Trigger Jenkins Job"
+    },
+    "Trigger Jenkins Job": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:TriggerJenkinsJobLambda",
+      "ResultPath": "$.jenkinsJob",
+      "Next": "Monitor Jenkins Job"
+    },
+    "Monitor Jenkins Job": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:MonitorJenkinsJobLambda",
+      "ResultPath": "$.buildResult",
+      "Next": "Send Vote to Gerrit"
+    },
+    "Send Vote to Gerrit": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:SendVoteToGerritLambda",
+      "End": true
+    }
+  }
+}
