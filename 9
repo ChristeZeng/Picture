@@ -1,0 +1,88 @@
+{
+  "Comment": "A state machine to trigger Jenkins jobs from Gerrit events",
+  "StartAt": "Check Kinesis Stream",
+  "States": {
+    "Check Kinesis Stream": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:kinesis:getRecords",
+      "Parameters": {
+        "StreamName": "your-kinesis-stream",
+        "ShardIterator": "SHARD_ITERATOR_TYPE"
+      },
+      "ResultPath": "$.kinesisResponse",
+      "Next": "Process Records"
+    },
+    "Process Records": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.kinesisResponse.Records",
+          "IsPresent": true,
+          "Next": "Parse Event"
+        }
+      ],
+      "Default": "End"
+    },
+    "Parse Event": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:ParseEventLambda",
+      "ResultPath": "$.parsedEvent",
+      "Next": "Check Event in DynamoDB"
+    },
+    "Check Event in DynamoDB": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Parameters": {
+        "TableName": "processed_events",
+        "Key": {
+          "change_id": {
+            "S": "$.parsedEvent.change_id"
+          }
+        }
+      },
+      "ResultPath": "$.dynamoResponse",
+      "Next": "Event Already Processed?"
+    },
+    "Event Already Processed?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.dynamoResponse.Item",
+          "IsPresent": true,
+          "Next": "End"
+        }
+      ],
+      "Default": "Mark Event as Processed"
+    },
+    "Mark Event as Processed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
+      "Parameters": {
+        "TableName": "processed_events",
+        "Item": {
+          "change_id": {
+            "S": "$.parsedEvent.change_id"
+          }
+        }
+      },
+      "Next": "Trigger Jenkins Job"
+    },
+    "Trigger Jenkins Job": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:TriggerJenkinsJobLambda",
+      "ResultPath": "$.jenkinsJob",
+      "Next": "Monitor Jenkins Job"
+    },
+    "Monitor Jenkins Job": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:MonitorJenkinsJobLambda",
+      "ResultPath": "$.buildResult",
+      "Next": "Send Vote to Gerrit"
+    },
+    "Send Vote to Gerrit": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:your-region:your-account-id:function:SendVoteToGerritLambda",
+      "End": true
+    }
+  }
+}
